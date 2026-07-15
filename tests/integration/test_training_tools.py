@@ -3,13 +3,17 @@ Integration tests for training module MCP tools
 
 Tests training tools using FastMCP integration with mocked Garmin API responses.
 """
+import datetime
+import os
+import tempfile
+
 import pytest
 from unittest.mock import Mock
 from mcp.server.fastmcp import FastMCP
 
 import json
 
-from garmin_mcp import training
+from garmin_mcp import cache, training
 from tests.fixtures.garmin_responses import (
     MOCK_PROGRESS_SUMMARY,
     MOCK_HRV_DATA,
@@ -29,6 +33,17 @@ def app_with_training(mock_garmin_client):
     app = FastMCP("Test Training")
     app = training.register_tools(app)
     return app
+
+
+@pytest.fixture
+def temp_cache():
+    """Point the trend cache at an isolated temp DB for the duration of a test."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache.configure(os.path.join(tmpdir, "test_cache.db"))
+        try:
+            yield
+        finally:
+            cache.close()
 
 
 @pytest.mark.asyncio
@@ -398,3 +413,105 @@ async def test_get_training_status_no_cycling_vo2_when_absent(app_with_training,
         assert "cycling_vo2_max_precise" not in data
     except (json.JSONDecodeError, AttributeError):
         assert "cycling_vo2_max" not in text
+
+
+# get_hrv_trend cache tests
+def _stable_date_range(days: int = 2):
+    """A date range old enough to fall outside the cache's freshness window."""
+    end = datetime.date.today() - datetime.timedelta(days=10)
+    start = end - datetime.timedelta(days=days - 1)
+    return start.isoformat(), end.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_get_hrv_trend_cold_cache_fetches_live(app_with_training, mock_garmin_client, temp_cache):
+    """A never-queried range should live-fetch every day and populate the cache."""
+    mock_garmin_client.get_hrv_data.return_value = MOCK_HRV_DATA
+    start_date, end_date = _stable_date_range(2)
+
+    result = await app_with_training.call_tool(
+        "get_hrv_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    assert mock_garmin_client.get_hrv_data.call_count == 2
+    data = json.loads(result[0][0].text)
+    assert data["cache_hits"] == 0
+    assert data["live_fetches"] == 2
+    assert data["days_with_data"] == 2
+
+    # Both days should now be cached
+    assert len(cache.get_range("hrv", start_date, end_date)) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_hrv_trend_reads_last_night_avg_field(app_with_training, mock_garmin_client, temp_cache):
+    """MOCK_HRV_DATA's hrvSummary.lastNightAvg (Garmin's real field name) must populate
+    last_night_avg_hrv_ms and feed into the period rolling average."""
+    mock_garmin_client.get_hrv_data.return_value = MOCK_HRV_DATA
+    start_date, end_date = _stable_date_range(1)
+
+    result = await app_with_training.call_tool(
+        "get_hrv_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    data = json.loads(result[0][0].text)
+    assert data["trend"][0]["last_night_avg_hrv_ms"] == MOCK_HRV_DATA["hrvSummary"]["lastNightAvg"]
+    assert data["period_avg_hrv_ms"] == MOCK_HRV_DATA["hrvSummary"]["lastNightAvg"]
+
+
+@pytest.mark.asyncio
+async def test_get_hrv_trend_warm_cache_skips_live_fetch(app_with_training, mock_garmin_client, temp_cache):
+    """A repeat query for an already-cached, stable range shouldn't hit the Garmin API again."""
+    mock_garmin_client.get_hrv_data.return_value = MOCK_HRV_DATA
+    start_date, end_date = _stable_date_range(2)
+
+    await app_with_training.call_tool(
+        "get_hrv_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+    mock_garmin_client.get_hrv_data.reset_mock()
+
+    result = await app_with_training.call_tool(
+        "get_hrv_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    mock_garmin_client.get_hrv_data.assert_not_called()
+    data = json.loads(result[0][0].text)
+    assert data["cache_hits"] == 2
+    assert data["live_fetches"] == 0
+    assert data["days_with_data"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_hrv_trend_allows_up_to_730_days(app_with_training, mock_garmin_client, temp_cache):
+    """MAX_DAYS was raised from 30 to 730 now that repeat queries are cache-backed."""
+    mock_garmin_client.get_hrv_data.return_value = MOCK_HRV_DATA
+    end = datetime.date.today() - datetime.timedelta(days=10)
+    start = end - datetime.timedelta(days=729)
+
+    result = await app_with_training.call_tool(
+        "get_hrv_trend",
+        {"start_date": start.isoformat(), "end_date": end.isoformat()},
+    )
+
+    text = result[0][0].text
+    assert "Date range too large" not in text
+
+
+@pytest.mark.asyncio
+async def test_get_hrv_trend_rejects_over_730_days(app_with_training, mock_garmin_client, temp_cache):
+    """A range longer than the new 730-day cap is still rejected."""
+    mock_garmin_client.get_hrv_data.return_value = MOCK_HRV_DATA
+    end = datetime.date.today() - datetime.timedelta(days=10)
+    start = end - datetime.timedelta(days=730)  # 731 days inclusive
+
+    result = await app_with_training.call_tool(
+        "get_hrv_trend",
+        {"start_date": start.isoformat(), "end_date": end.isoformat()},
+    )
+
+    text = result[0][0].text
+    assert "Date range too large" in text

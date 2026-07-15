@@ -6,6 +6,8 @@ import json
 import datetime
 from typing import Any, Dict, List, Optional, Union
 
+from garmin_mcp import cache
+
 # The garmin_client will be set by the main file
 garmin_client = None
 
@@ -37,6 +39,34 @@ def _get_activity_type_mapping() -> Dict[int, str]:
         _activity_type_cache = {}
 
     return _activity_type_cache
+
+
+def _curate_hrv_day(data: Dict[str, Any], date_str: str) -> Optional[Dict[str, Any]]:
+    """Extract the curated per-day HRV fields from a raw get_hrv_data() response.
+
+    Shared by get_hrv_trend (live tool) and the garmin-mcp-backfill CLI so both
+    produce identically-shaped cache entries.
+    """
+    if not data:
+        return None
+    hrv_summary = data.get("hrvSummary", {})
+    entry: Dict[str, Any] = {"date": date_str}
+    last_night = hrv_summary.get("lastNightAvg")
+    weekly_avg = hrv_summary.get("weeklyAvg")
+    status = hrv_summary.get("status")
+    feedback = hrv_summary.get("feedbackPhrase")
+    high_hrv = hrv_summary.get("lastNight5MinHigh")
+    if last_night is not None:
+        entry["last_night_avg_hrv_ms"] = round(last_night, 1)
+    if weekly_avg is not None:
+        entry["weekly_avg_hrv_ms"] = round(weekly_avg, 1)
+    if high_hrv is not None:
+        entry["last_night_5min_high_hrv_ms"] = round(high_hrv, 1)
+    if status:
+        entry["status"] = status
+    if feedback:
+        entry["feedback"] = feedback
+    return entry if len(entry) > 1 else None
 
 
 def _map_contributor(
@@ -786,13 +816,15 @@ def register_tools(app):
         to act on — use this tool to identify baseline shifts that signal accumulated fatigue
         or recovery. A drop of >10ms from the 7-day baseline warrants reducing training load.
 
-        Recommended range: 7-21 days. Maximum: 30 days.
+        Recommended range: 7-21 days. Maximum: 730 days (2 years) — results for dates already
+        fetched before are served from a local cache; a range that's never been queried before
+        will be slower since each new day requires a live Garmin API call.
 
         Args:
             start_date: Start date in YYYY-MM-DD format
             end_date: End date in YYYY-MM-DD format
         """
-        MAX_DAYS = 30
+        MAX_DAYS = 730
         try:
             start = datetime.date.fromisoformat(start_date)
             end = datetime.date.fromisoformat(end_date)
@@ -805,35 +837,27 @@ def register_tools(app):
         if days < 1:
             return "end_date must be on or after start_date."
 
-        trend = []
-        current = start
-        while current <= end:
-            date_str = current.isoformat()
+        missing = cache.missing_dates("hrv", start_date, end_date)
+        missing_set = set(missing)
+        cached_entries = cache.get_range("hrv", start_date, end_date)
+        entries: Dict[str, Dict[str, Any]] = {
+            d: v for d, v in cached_entries.items() if d not in missing_set
+        }
+        cache_hits = len(entries)
+
+        live_fetches = 0
+        for date_str in missing:
+            live_fetches += 1
             try:
                 data = garmin_client.get_hrv_data(date_str)
-                if data:
-                    hrv_summary = data.get("hrvSummary", {})
-                    entry: Dict[str, Any] = {"date": date_str}
-                    last_night = hrv_summary.get("lastNight")
-                    weekly_avg = hrv_summary.get("weeklyAvg")
-                    status = hrv_summary.get("status")
-                    feedback = hrv_summary.get("feedbackPhrase")
-                    high_hrv = hrv_summary.get("lastNight5MinHigh")
-                    if last_night is not None:
-                        entry["last_night_avg_hrv_ms"] = round(last_night, 1)
-                    if weekly_avg is not None:
-                        entry["weekly_avg_hrv_ms"] = round(weekly_avg, 1)
-                    if high_hrv is not None:
-                        entry["last_night_5min_high_hrv_ms"] = round(high_hrv, 1)
-                    if status:
-                        entry["status"] = status
-                    if feedback:
-                        entry["feedback"] = feedback
-                    if len(entry) > 1:
-                        trend.append(entry)
+                entry = _curate_hrv_day(data, date_str)
+                if entry:
+                    entries[date_str] = entry
+                    cache.store_day("hrv", date_str, entry)
             except Exception:
                 pass
-            current += datetime.timedelta(days=1)
+
+        trend = [entries[d] for d in sorted(entries)]
 
         if not trend:
             return f"No HRV data found between {start_date} and {end_date}."
@@ -849,6 +873,8 @@ def register_tools(app):
             "end_date": end_date,
             "days_with_data": len(trend),
             "period_avg_hrv_ms": rolling_avg,
+            "cache_hits": cache_hits,
+            "live_fetches": live_fetches,
             "trend": trend,
         }, indent=2)
 

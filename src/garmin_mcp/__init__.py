@@ -30,6 +30,7 @@ from garmin_mcp import nutrition
 from garmin_mcp import workout_builders
 from garmin_mcp import courses
 from garmin_mcp import activity_analysis
+from garmin_mcp import cache
 from garmin_mcp.ui import resources as ui_resources
 
 
@@ -368,6 +369,9 @@ def main():
 
     # Wrap client so runtime auth/rate-limit errors surface as clear messages
     garmin_client = _GarminProxy(garmin_client)
+
+    # Configure the local trend cache (used by long-range trend tools)
+    cache.configure()
 
     # Configure all modules with the Garmin client
     activity_management.configure(garmin_client)
