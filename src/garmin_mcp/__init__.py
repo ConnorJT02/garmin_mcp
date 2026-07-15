@@ -152,6 +152,47 @@ class _GarminProxy:
         return _call
 
 
+def _ensure_windows_ca_bundle() -> None:
+    """Point curl_cffi at Windows' actual CA/ROOT certificate stores.
+
+    garminconnect uses curl_cffi (a separate, embedded libcurl, independent
+    of Python's ssl module) for some requests, including proactive OAuth
+    token refresh. On a machine whose IT department injects a custom root CA
+    (e.g. for TLS-inspecting proxies), curl_cffi's own trust store doesn't
+    know about it and every such request fails with "SSL certificate
+    problem: unable to get local issuer certificate" — which crashes the
+    server at startup whenever a saved token needs refreshing, surfacing to
+    Claude Desktop as "Server disconnected". truststore/pip-system-certs
+    doesn't help here since it only patches Python's ssl module, which
+    curl_cffi doesn't use. Exporting the OS store to a PEM file and pointing
+    curl_cffi's CURL_CA_BUNDLE at it covers this separate trust path.
+    """
+    if os.environ.get("CURL_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE"):
+        return  # Already configured — respect an explicit override.
+
+    import ssl
+    import base64
+
+    bundle_path = os.path.expanduser("~/.garmin_mcp_ca_bundle.pem")
+    try:
+        lines = []
+        for store in ("CA", "ROOT"):
+            for cert_der, encoding, _trust in ssl.enum_certificates(store):
+                if encoding != "x509_asn":
+                    continue
+                b64 = base64.b64encode(cert_der).decode("ascii")
+                lines.append("-----BEGIN CERTIFICATE-----")
+                lines.extend(b64[i:i + 64] for i in range(0, len(b64), 64))
+                lines.append("-----END CERTIFICATE-----")
+        with open(bundle_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception as exc:
+        print(f"Warning: could not export Windows CA store: {exc}", file=sys.stderr)
+        return
+
+    os.environ["CURL_CA_BUNDLE"] = bundle_path
+
+
 def _parse_transport_config() -> tuple[str, str, int]:
     """Read and validate HTTP transport env vars. Raises ValueError on bad input."""
     transport = os.getenv("GARMIN_MCP_TRANSPORT", "stdio").strip().lower()
@@ -346,6 +387,7 @@ def main():
     if sys.platform == "win32":
         import io
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, newline="\n")
+        _ensure_windows_ca_bundle()
 
     # --- Transport configuration --------------------------------------------
     # By default the server speaks stdio (Claude Desktop, MCP Inspector, etc.).
