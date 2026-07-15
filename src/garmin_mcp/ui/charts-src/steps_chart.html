@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Steps chart</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    font-family: var(--font-sans, system-ui, sans-serif);
+    color: var(--color-text-primary, #1b1b1f);
+    background: var(--color-background-secondary, transparent);
+  }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 12px;
+  }
+  .header h1 {
+    font-size: var(--font-heading-md-size, 16px);
+    margin: 0;
+    font-weight: 600;
+  }
+  .header .score {
+    font-size: var(--font-text-sm-size, 13px);
+    color: var(--color-text-secondary, #6b6b76);
+  }
+  .bars {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    height: 160px;
+    padding: 0 4px;
+  }
+  .bar-col {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 100%;
+    justify-content: flex-end;
+  }
+  .bar {
+    width: 100%;
+    max-width: 40px;
+    border-radius: var(--border-radius-md, 6px) var(--border-radius-md, 6px) 0 0;
+    transition: height 0.3s ease;
+  }
+  .bar-label {
+    margin-top: 8px;
+    font-size: var(--font-text-xs-size, 11px);
+    color: var(--color-text-secondary, #6b6b76);
+    text-align: center;
+    white-space: nowrap;
+  }
+  .bar-value {
+    font-size: var(--font-text-xs-size, 11px);
+    font-weight: 600;
+    margin-bottom: 4px;
+    white-space: nowrap;
+  }
+  .goal-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-top: 2px dashed var(--color-text-secondary, #6b6b76);
+    opacity: 0.6;
+  }
+  .goal-label {
+    position: absolute;
+    right: 4px;
+    transform: translateY(-100%);
+    font-size: var(--font-text-xs-size, 11px);
+    color: var(--color-text-secondary, #6b6b76);
+    background: var(--color-background-secondary, transparent);
+    padding: 0 4px;
+  }
+  .empty, .error {
+    color: var(--color-text-secondary, #6b6b76);
+    font-size: var(--font-text-sm-size, 13px);
+    padding: 24px 4px;
+    text-align: center;
+  }
+  .error { color: var(--color-text-danger, #c4453a); }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1 id="title">Steps</h1>
+    <span class="score" id="score"></span>
+  </div>
+  <div id="content" class="empty">Waiting for steps data&hellip;</div>
+
+<script type="module">
+  import { App, PostMessageTransport, applyDocumentTheme, applyHostStyleVariables, applyHostFonts }
+    from "@modelcontextprotocol/ext-apps";
+
+  const MET_COLOR = "#2f9e44";
+  const UNMET_COLOR = "#748ffc";
+
+  const scoreEl = document.getElementById("score");
+  const contentEl = document.getElementById("content");
+
+  function extractPayload(result) {
+    if (!result) return null;
+    // FastMCP wraps a plain-string tool return as { result: "<json>" } in
+    // structuredContent, since structuredContent must itself be an object.
+    if (typeof result === "object" && !Array.isArray(result) && typeof result.result === "string") {
+      try {
+        return JSON.parse(result.result);
+      } catch {
+        return null;
+      }
+    }
+    return result;
+  }
+
+  function parseToolResult(result) {
+    if (!result) return null;
+    if (result.structuredContent) {
+      const parsed = extractPayload(result.structuredContent);
+      if (parsed) return parsed;
+    }
+    const textBlock = (result.content || []).find((c) => c.type === "text");
+    if (!textBlock) return null;
+    try {
+      return JSON.parse(textBlock.text);
+    } catch {
+      return null;
+    }
+  }
+
+  function renderError(message) {
+    contentEl.className = "error";
+    contentEl.textContent = message;
+  }
+
+  function formatDateLabel(dateStr) {
+    const d = new Date(`${dateStr}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  function renderChart(days) {
+    if (!Array.isArray(days) || !days.length) {
+      renderError("No steps data available for this date range.");
+      return;
+    }
+
+    const entries = days
+      .map((d) => ({
+        date: d.calendarDate,
+        steps: Number(d.totalSteps) || 0,
+        goal: Number(d.stepGoal) || null,
+      }))
+      .filter((d) => d.date);
+
+    if (!entries.length) {
+      renderError("No steps data available for this date range.");
+      return;
+    }
+
+    const latestGoal = [...entries].reverse().find((d) => d.goal != null)?.goal ?? null;
+    const maxValue = Math.max(...entries.map((d) => d.steps), latestGoal ?? 0, 1);
+
+    const totalSteps = entries.reduce((sum, d) => sum + d.steps, 0);
+    const avgSteps = Math.round(totalSteps / entries.length);
+    scoreEl.textContent = `Avg ${avgSteps.toLocaleString()} steps/day`;
+
+    const bars = document.createElement("div");
+    bars.className = "bars";
+
+    entries.forEach((entry) => {
+      const heightPct = Math.max(4, Math.round((entry.steps / maxValue) * 100));
+      const metGoal = entry.goal != null && entry.steps >= entry.goal;
+
+      const col = document.createElement("div");
+      col.className = "bar-col";
+
+      const valueEl = document.createElement("div");
+      valueEl.className = "bar-value";
+      valueEl.textContent = entry.steps.toLocaleString();
+
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      bar.style.height = `${heightPct}%`;
+      bar.style.background = metGoal ? MET_COLOR : UNMET_COLOR;
+
+      const label = document.createElement("div");
+      label.className = "bar-label";
+      label.textContent = formatDateLabel(entry.date);
+
+      col.appendChild(valueEl);
+      col.appendChild(bar);
+      col.appendChild(label);
+      bars.appendChild(col);
+    });
+
+    if (latestGoal != null) {
+      const goalPct = Math.min(100, Math.round((latestGoal / maxValue) * 100));
+      const goalLine = document.createElement("div");
+      goalLine.className = "goal-line";
+      goalLine.style.bottom = `${goalPct}%`;
+
+      const goalLabel = document.createElement("div");
+      goalLabel.className = "goal-label";
+      goalLabel.style.bottom = `${goalPct}%`;
+      goalLabel.textContent = `Goal ${latestGoal.toLocaleString()}`;
+
+      bars.appendChild(goalLine);
+      bars.appendChild(goalLabel);
+    }
+
+    contentEl.replaceWith(bars);
+    bars.id = "content";
+  }
+
+  const app = new App({ name: "garmin-mcp-steps-chart", version: "0.1.0" });
+
+  app.ontoolinput = () => {
+    contentEl.className = "empty";
+    contentEl.textContent = "Loading steps data…";
+  };
+
+  app.ontoolresult = (result) => {
+    const days = parseToolResult(result);
+    renderChart(days);
+  };
+
+  app.onhostcontextchanged = (ctx) => {
+    if (ctx.theme) applyDocumentTheme(ctx.theme);
+    if (ctx.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
+    if (ctx.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
+    if (ctx.safeAreaInsets) {
+      const { top, right, bottom, left } = ctx.safeAreaInsets;
+      document.body.style.padding = `${top ?? 16}px ${right ?? 16}px ${bottom ?? 16}px ${left ?? 16}px`;
+    }
+  };
+
+  app.onteardown = async () => ({});
+
+  try {
+    await app.connect(new PostMessageTransport());
+  } catch (err) {
+    renderError(`Failed to connect to host: ${err?.message || err}`);
+  }
+</script>
+</body>
+</html>

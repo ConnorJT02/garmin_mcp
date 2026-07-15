@@ -5,6 +5,8 @@ import json
 import datetime
 from typing import Any, Dict, List, Optional, Union
 
+from garmin_mcp.ui.resources import CHART_URIS
+
 # The garmin_client will be set by the main file
 garmin_client = None
 
@@ -168,7 +170,7 @@ def register_tools(app):
         except Exception as e:
             return f"Error retrieving steps data: {str(e)}"
 
-    @app.tool()
+    @app.tool(meta={"ui": {"resourceUri": CHART_URIS["steps"]}})
     async def get_daily_steps(start_date: str, end_date: str) -> str:
         """Get steps data for a date range
 
@@ -373,7 +375,7 @@ def register_tools(app):
         except Exception as e:
             return f"Error retrieving heart rate data: {str(e)}"
 
-    @app.tool()
+    @app.tool(meta={"ui": {"resourceUri": CHART_URIS["heart_rate"]}})
     async def get_heart_rates_summary(date: str) -> str:
         """Get heart rate summary with essential metrics (lightweight version)
 
@@ -446,7 +448,7 @@ def register_tools(app):
         except Exception as e:
             return f"Error retrieving sleep data: {str(e)}"
 
-    @app.tool()
+    @app.tool(meta={"ui": {"resourceUri": CHART_URIS["sleep"]}})
     async def get_sleep_summary(date: str) -> str:
         """Get sleep summary with only essential metrics (lightweight version)
 
@@ -539,7 +541,7 @@ def register_tools(app):
         except Exception as e:
             return f"Error retrieving stress data: {str(e)}"
 
-    @app.tool()
+    @app.tool(meta={"ui": {"resourceUri": CHART_URIS["stress"]}})
     async def get_stress_summary(date: str) -> str:
         """Get stress summary with essential metrics (lightweight version)
 

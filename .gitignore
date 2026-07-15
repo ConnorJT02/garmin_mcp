@@ -9,6 +9,9 @@ dist/
 build/
 *.egg
 
+# Node (chart build tooling under src/garmin_mcp/ui/charts-src/)
+node_modules/
+
 # Virtual environments
 .env
 .venv/

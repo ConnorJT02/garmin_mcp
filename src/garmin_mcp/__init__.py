@@ -5,6 +5,8 @@ Modular MCP Server for Garmin Connect Data
 import os
 import sys
 import base64
+import logging
+logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
 
 import requests
 from mcp.server.fastmcp import FastMCP
@@ -28,6 +30,7 @@ from garmin_mcp import nutrition
 from garmin_mcp import workout_builders
 from garmin_mcp import courses
 from garmin_mcp import activity_analysis
+from garmin_mcp.ui import resources as ui_resources
 
 
 def is_interactive_terminal() -> bool:
@@ -409,8 +412,9 @@ def main():
     app = courses.register_tools(app)
     app = activity_analysis.register_tools(app)
 
-    # Register resources (workout templates)
+    # Register resources (workout templates, UI charts)
     app = workout_templates.register_resources(app)
+    app = ui_resources.register_resources(app)
 
     # Warn about filter entries that matched no tool (most likely typos)
     unknown = app.unknown_filter_names()

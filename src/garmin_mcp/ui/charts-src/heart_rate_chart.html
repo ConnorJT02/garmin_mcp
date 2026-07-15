@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Heart rate chart</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    font-family: var(--font-sans, system-ui, sans-serif);
+    color: var(--color-text-primary, #1b1b1f);
+    background: var(--color-background-secondary, transparent);
+  }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 12px;
+  }
+  .header h1 {
+    font-size: var(--font-heading-md-size, 16px);
+    margin: 0;
+    font-weight: 600;
+  }
+  .header .score {
+    font-size: var(--font-text-sm-size, 13px);
+    color: var(--color-text-secondary, #6b6b76);
+  }
+  .bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 16px;
+    height: 160px;
+    padding: 0 4px;
+  }
+  .bar-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 100%;
+    justify-content: flex-end;
+  }
+  .bar {
+    width: 100%;
+    max-width: 48px;
+    border-radius: var(--border-radius-md, 6px) var(--border-radius-md, 6px) 0 0;
+    transition: height 0.3s ease;
+  }
+  .bar-label {
+    margin-top: 8px;
+    font-size: var(--font-text-xs-size, 11px);
+    color: var(--color-text-secondary, #6b6b76);
+    text-align: center;
+  }
+  .bar-value {
+    font-size: var(--font-text-xs-size, 11px);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .empty, .error {
+    color: var(--color-text-secondary, #6b6b76);
+    font-size: var(--font-text-sm-size, 13px);
+    padding: 24px 4px;
+    text-align: center;
+  }
+  .error { color: var(--color-text-danger, #c4453a); }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1 id="title">Heart Rate</h1>
+    <span class="score" id="score"></span>
+  </div>
+  <div id="content" class="empty">Waiting for heart rate data&hellip;</div>
+
+<script type="module">
+  import { App, PostMessageTransport, applyDocumentTheme, applyHostStyleVariables, applyHostFonts }
+    from "@modelcontextprotocol/ext-apps";
+
+  const METRICS = [
+    { key: "min_heart_rate_bpm", label: "Min", color: "#748ffc" },
+    { key: "resting_heart_rate_bpm", label: "Resting", color: "#3b5bdb" },
+    { key: "avg_heart_rate_bpm", label: "Avg", color: "#f08c00" },
+    { key: "max_heart_rate_bpm", label: "Max", color: "#e03131" },
+  ];
+
+  const scoreEl = document.getElementById("score");
+  const contentEl = document.getElementById("content");
+
+  function extractSummary(result) {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+    // FastMCP wraps a plain-string tool return as { result: "<json>" } in
+    // structuredContent, since structuredContent must itself be an object.
+    if (typeof result.result === "string") {
+      try {
+        return JSON.parse(result.result);
+      } catch {
+        return null;
+      }
+    }
+    return Object.keys(result).length ? result : null;
+  }
+
+  function parseToolResult(result) {
+    if (!result) return null;
+    if (result.structuredContent) {
+      const parsed = extractSummary(result.structuredContent);
+      if (parsed) return parsed;
+    }
+    const textBlock = (result.content || []).find((c) => c.type === "text");
+    if (!textBlock) return null;
+    try {
+      return JSON.parse(textBlock.text);
+    } catch {
+      return null;
+    }
+  }
+
+  function renderError(message) {
+    contentEl.className = "error";
+    contentEl.textContent = message;
+  }
+
+  function renderChart(summary) {
+    if (!summary || typeof summary !== "object") {
+      renderError("No heart rate data available for this date.");
+      return;
+    }
+
+    const values = METRICS.map((m) => Number(summary[m.key]));
+    const knownValues = values.filter((v) => Number.isFinite(v));
+
+    if (!knownValues.length) {
+      renderError("No heart rate data available for this date.");
+      return;
+    }
+
+    const minScale = Math.min(...knownValues);
+    const maxScale = Math.max(...knownValues, minScale + 1);
+
+    scoreEl.textContent = summary.last_7_days_avg_resting_hr != null
+      ? `7-day avg resting ${summary.last_7_days_avg_resting_hr} bpm`
+      : "";
+
+    const bars = document.createElement("div");
+    bars.className = "bars";
+
+    METRICS.forEach((metric, i) => {
+      const value = values[i];
+      const col = document.createElement("div");
+      col.className = "bar-col";
+
+      const valueEl = document.createElement("div");
+      valueEl.className = "bar-value";
+      valueEl.textContent = Number.isFinite(value) ? `${Math.round(value)}` : "-";
+
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      // Scale within the observed min/max range so differences are visible,
+      // rather than from zero (heart rate values cluster in a narrow band).
+      const heightPct = Number.isFinite(value)
+        ? Math.max(4, Math.round(((value - minScale) / (maxScale - minScale)) * 100))
+        : 4;
+      bar.style.height = `${heightPct}%`;
+      bar.style.background = metric.color;
+
+      const label = document.createElement("div");
+      label.className = "bar-label";
+      label.textContent = metric.label;
+
+      col.appendChild(valueEl);
+      col.appendChild(bar);
+      col.appendChild(label);
+      bars.appendChild(col);
+    });
+
+    contentEl.replaceWith(bars);
+    bars.id = "content";
+  }
+
+  const app = new App({ name: "garmin-mcp-heart-rate-chart", version: "0.1.0" });
+
+  app.ontoolinput = () => {
+    contentEl.className = "empty";
+    contentEl.textContent = "Loading heart rate data…";
+  };
+
+  app.ontoolresult = (result) => {
+    const summary = parseToolResult(result);
+    renderChart(summary);
+  };
+
+  app.onhostcontextchanged = (ctx) => {
+    if (ctx.theme) applyDocumentTheme(ctx.theme);
+    if (ctx.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
+    if (ctx.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
+    if (ctx.safeAreaInsets) {
+      const { top, right, bottom, left } = ctx.safeAreaInsets;
+      document.body.style.padding = `${top ?? 16}px ${right ?? 16}px ${bottom ?? 16}px ${left ?? 16}px`;
+    }
+  };
+
+  app.onteardown = async () => ({});
+
+  try {
+    await app.connect(new PostMessageTransport());
+  } catch (err) {
+    renderError(`Failed to connect to host: ${err?.message || err}`);
+  }
+</script>
+</body>
+</html>
