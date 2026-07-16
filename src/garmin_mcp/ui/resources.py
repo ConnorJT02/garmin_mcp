@@ -69,6 +69,11 @@ _CHARTS = {
         "training_load_trend_chart",
         "Multi-line chart of training load (CTL/ATL) trend over a date range",
     ),
+    "body_composition_trend": (
+        "ui://garmin-mcp/body_composition_trend_chart.html",
+        "body_composition_trend_chart",
+        "Line chart of body weight trend over a date range",
+    ),
 }
 
 # Exposed so other modules can do:

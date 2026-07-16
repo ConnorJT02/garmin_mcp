@@ -778,3 +778,92 @@ async def test_get_heart_rate_trend_allows_up_to_730_days(app_with_health_wellne
 
     assert "Date range too large" not in result[0][0].text
 
+# get_body_composition_trend tests
+# No native fixture exists for the weight/dateRange response shape (the
+# account this was built against had zero logged measurements) — field
+# names here are inferred from the same response's own `totalAverage`
+# aggregate object. Worth reverifying against a real dateWeightList entry
+# once measurements exist.
+MOCK_BODY_COMPOSITION_RANGE = {
+    "startDate": "2026-07-01",
+    "endDate": "2026-07-03",
+    "dateWeightList": [
+        {
+            "calendarDate": "2026-07-01",
+            "weight": 70000,
+            "bmi": 22.5,
+            "bodyFat": 15.0,
+            "bodyWater": 60.0,
+            "boneMass": 3.2,
+            "muscleMass": 32.5,
+            "visceralFat": 5,
+            "metabolicAge": 30,
+        },
+        {
+            "calendarDate": "2026-07-02",
+            "weight": 69800,
+            "bmi": 22.4,
+            "bodyFat": 14.8,
+        },
+    ],
+    "totalAverage": {
+        "weight": 69900,
+        "bmi": 22.45,
+        "bodyFat": 14.9,
+        "bodyWater": None,
+        "boneMass": None,
+        "muscleMass": None,
+        "physiqueRating": None,
+        "visceralFat": None,
+        "metabolicAge": None,
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_get_body_composition_trend_curates_entries(app_with_health_wellness, mock_garmin_client):
+    mock_garmin_client.get_body_composition.return_value = MOCK_BODY_COMPOSITION_RANGE
+
+    result = await app_with_health_wellness.call_tool(
+        "get_body_composition_trend",
+        {"start_date": "2026-07-01", "end_date": "2026-07-03"},
+    )
+
+    mock_garmin_client.get_body_composition.assert_called_once_with("2026-07-01", "2026-07-03")
+    data = json.loads(result[0][0].text)
+    assert data["days_with_data"] == 2
+    assert data["trend"][0] == {
+        "date": "2026-07-01",
+        "weight_kg": 70.0,
+        "bmi": 22.5,
+        "body_fat_percent": 15.0,
+        "body_water_percent": 60.0,
+        "bone_mass_kg": 3.2,
+        "muscle_mass_kg": 32.5,
+        "visceral_fat": 5,
+        "metabolic_age": 30,
+    }
+    assert data["trend"][1] == {
+        "date": "2026-07-02",
+        "weight_kg": 69.8,
+        "bmi": 22.4,
+        "body_fat_percent": 14.8,
+    }
+    assert data["period_avg_weight_kg"] == round((70.0 + 69.8) / 2, 1)
+
+
+@pytest.mark.asyncio
+async def test_get_body_composition_trend_no_measurements(app_with_health_wellness, mock_garmin_client):
+    mock_garmin_client.get_body_composition.return_value = {
+        "startDate": "2026-07-01",
+        "endDate": "2026-07-03",
+        "dateWeightList": [],
+        "totalAverage": {"weight": None},
+    }
+
+    result = await app_with_health_wellness.call_tool(
+        "get_body_composition_trend",
+        {"start_date": "2026-07-01", "end_date": "2026-07-03"},
+    )
+
+    assert "No body composition measurements found" in result[0][0].text

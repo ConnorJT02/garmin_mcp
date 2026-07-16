@@ -77,6 +77,51 @@ def _curate_heart_rate_day(data: Dict[str, Any], date_str: str) -> Optional[Dict
     return entry if len(entry) > 1 else None
 
 
+def _curate_body_composition_entry(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract curated fields from one dateWeightList entry in a
+    get_body_composition(start_date, end_date) response.
+
+    NOTE: unlike the other trend tools, get_body_composition already hits a
+    native Garmin range endpoint (weight/dateRange) in a single call, so
+    there's no per-day cache/backfill involved here — this just curates
+    whatever the one call returns. Field names are inferred from the
+    response's own `totalAverage` aggregate object (weight/bmi/bodyFat/
+    bodyWater/boneMass/muscleMass/visceralFat/physiqueRating/metabolicAge),
+    since this account has no logged entries yet to verify field names
+    against directly — worth double-checking once real data exists.
+    """
+    if not item:
+        return None
+    date_str = item.get("calendarDate")
+    if not date_str:
+        ts = item.get("date") or item.get("timestampLocal") or item.get("timestampGMT")
+        if ts is not None:
+            try:
+                date_str = datetime.datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+            except (TypeError, ValueError, OSError):
+                date_str = None
+    if not date_str:
+        return None
+
+    entry: Dict[str, Any] = {"date": date_str}
+    weight_g = item.get("weight")
+    if weight_g is not None:
+        entry["weight_kg"] = round(weight_g / 1000, 1)
+    for src_key, dst_key, rounding in (
+        ("bmi", "bmi", 1),
+        ("bodyFat", "body_fat_percent", 1),
+        ("bodyWater", "body_water_percent", 1),
+        ("boneMass", "bone_mass_kg", 2),
+        ("muscleMass", "muscle_mass_kg", 2),
+        ("visceralFat", "visceral_fat", 0),
+        ("metabolicAge", "metabolic_age", 0),
+    ):
+        value = item.get(src_key)
+        if value is not None:
+            entry[dst_key] = round(value, rounding)
+    return entry if len(entry) > 1 else None
+
+
 def register_tools(app):
     """Register all health and wellness tools with the MCP server app"""
 
@@ -194,6 +239,44 @@ def register_tools(app):
             return json.dumps(composition, indent=2)
         except Exception as e:
             return f"Error retrieving body composition data: {str(e)}"
+
+    @app.tool(meta={"ui": {"resourceUri": CHART_URIS["body_composition_trend"]}})
+    async def get_body_composition_trend(start_date: str, end_date: str) -> str:
+        """Get body composition trend (weight, body fat %, muscle mass, etc.) over a date range.
+
+        Unlike the other trend tools, this hits a native Garmin range endpoint in a
+        single call — there's no per-day caching involved, so any range is equally fast.
+        Only returns entries for days you actually logged a measurement (e.g. via a
+        smart scale); days without a logged measurement are simply absent from the trend.
+
+        Args:
+            start_date: Start date in YYYY-MM-DD format
+            end_date: End date in YYYY-MM-DD format
+        """
+        try:
+            composition = garmin_client.get_body_composition(start_date, end_date)
+            if not composition:
+                return f"No body composition data found between {start_date} and {end_date}"
+
+            raw_entries = composition.get("dateWeightList") or []
+            trend = [e for e in (_curate_body_composition_entry(item) for item in raw_entries) if e]
+            trend.sort(key=lambda e: e["date"])
+
+            if not trend:
+                return f"No body composition measurements found between {start_date} and {end_date}"
+
+            weight_values = [e["weight_kg"] for e in trend if "weight_kg" in e]
+            avg_weight = round(sum(weight_values) / len(weight_values), 1) if weight_values else None
+
+            return json.dumps({
+                "start_date": start_date,
+                "end_date": end_date,
+                "days_with_data": len(trend),
+                "period_avg_weight_kg": avg_weight,
+                "trend": trend,
+            }, indent=2)
+        except Exception as e:
+            return f"Error retrieving body composition trend: {str(e)}"
 
     @app.tool()
     async def get_stats_and_body(date: str) -> str:
