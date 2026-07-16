@@ -515,3 +515,186 @@ async def test_get_hrv_trend_rejects_over_730_days(app_with_training, mock_garmi
 
     text = result[0][0].text
     assert "Date range too large" in text
+
+
+# get_training_load_trend cache tests
+@pytest.mark.asyncio
+async def test_get_training_load_trend_extracts_device_keyed_fields(app_with_training, mock_garmin_client, temp_cache):
+    """latestTrainingStatusData is keyed by device ID (see MOCK_TRAINING_STATUS) —
+    atl/ctl/tsb/acwr/training_status must come from the first device's data, not
+    be looked up directly on the device-ID-keyed dict."""
+    mock_garmin_client.get_training_status.return_value = MOCK_TRAINING_STATUS
+    start_date, end_date = _stable_date_range(1)
+
+    result = await app_with_training.call_tool(
+        "get_training_load_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    data = json.loads(result[0][0].text)
+    assert data["live_fetches"] == 1
+    entry = data["trend"][0]
+    assert entry["atl"] == 250
+    assert entry["ctl"] == 220
+    assert entry["tsb"] == round(220 - 250, 1)
+    assert entry["acwr"] == 1.14
+    assert entry["acwr_status"] == "OPTIMAL"
+    assert entry["training_status"] == "MAINTAINING"
+    assert entry["vo2_max"] == 52.5
+
+
+@pytest.mark.asyncio
+async def test_get_training_load_trend_warm_cache_skips_live_fetch(app_with_training, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_training_status.return_value = MOCK_TRAINING_STATUS
+    start_date, end_date = _stable_date_range(2)
+
+    await app_with_training.call_tool(
+        "get_training_load_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+    mock_garmin_client.get_training_status.reset_mock()
+
+    result = await app_with_training.call_tool(
+        "get_training_load_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    mock_garmin_client.get_training_status.assert_not_called()
+    data = json.loads(result[0][0].text)
+    assert data["cache_hits"] == 2
+    assert data["live_fetches"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_training_load_trend_allows_up_to_730_days(app_with_training, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_training_status.return_value = MOCK_TRAINING_STATUS
+    end = datetime.date.today() - datetime.timedelta(days=10)
+    start = end - datetime.timedelta(days=729)
+
+    result = await app_with_training.call_tool(
+        "get_training_load_trend",
+        {"start_date": start.isoformat(), "end_date": end.isoformat()},
+    )
+
+    assert "Date range too large" not in result[0][0].text
+
+
+# get_vo2max_trend cache tests
+@pytest.mark.asyncio
+async def test_get_vo2max_trend_dedups_consecutive_unchanged_values(app_with_training, mock_garmin_client, temp_cache):
+    """Dedup now runs after merging cache + live data, so it must still collapse
+    a run of identical values across a range, matching the tool's original behavior."""
+    mock_garmin_client.get_training_status.return_value = MOCK_TRAINING_STATUS
+    start_date, end_date = _stable_date_range(3)
+
+    result = await app_with_training.call_tool(
+        "get_vo2max_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    data = json.loads(result[0][0].text)
+    # All 3 days share the same vo2_max (52.5) in MOCK_TRAINING_STATUS, so
+    # they should collapse to a single data point.
+    assert data["data_points"] == 1
+    assert data["trend"][0]["vo2_max"] == 52.5
+    assert data["live_fetches"] == 3
+
+
+@pytest.mark.asyncio
+async def test_get_vo2max_trend_warm_cache_skips_live_fetch(app_with_training, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_training_status.return_value = MOCK_TRAINING_STATUS
+    start_date, end_date = _stable_date_range(2)
+
+    await app_with_training.call_tool(
+        "get_vo2max_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+    mock_garmin_client.get_training_status.reset_mock()
+
+    result = await app_with_training.call_tool(
+        "get_vo2max_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    mock_garmin_client.get_training_status.assert_not_called()
+    data = json.loads(result[0][0].text)
+    assert data["cache_hits"] == 2
+    assert data["live_fetches"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_vo2max_trend_allows_up_to_730_days(app_with_training, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_training_status.return_value = MOCK_TRAINING_STATUS
+    end = datetime.date.today() - datetime.timedelta(days=10)
+    start = end - datetime.timedelta(days=729)
+
+    result = await app_with_training.call_tool(
+        "get_vo2max_trend",
+        {"start_date": start.isoformat(), "end_date": end.isoformat()},
+    )
+
+    assert "Date range too large" not in result[0][0].text
+
+
+# get_respiration_trend cache tests
+MOCK_RESPIRATION_TREND_DAY = {
+    "calendarDate": "2026-01-01",
+    "avgWakingRespirationValue": 15.0,
+    "avgSleepRespirationValue": 13.5,
+    "highestRespirationValue": 20.0,
+    "lowestRespirationValue": 11.0,
+}
+
+
+@pytest.mark.asyncio
+async def test_get_respiration_trend_cold_cache_fetches_live(app_with_training, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_respiration_data.return_value = MOCK_RESPIRATION_TREND_DAY
+    start_date, end_date = _stable_date_range(2)
+
+    result = await app_with_training.call_tool(
+        "get_respiration_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    assert mock_garmin_client.get_respiration_data.call_count == 2
+    data = json.loads(result[0][0].text)
+    assert data["cache_hits"] == 0
+    assert data["live_fetches"] == 2
+    assert data["period_avg_sleep_breaths_per_min"] == 13.5
+    assert data["trend"][0]["avg_waking_breaths_per_min"] == 15.0
+
+
+@pytest.mark.asyncio
+async def test_get_respiration_trend_warm_cache_skips_live_fetch(app_with_training, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_respiration_data.return_value = MOCK_RESPIRATION_TREND_DAY
+    start_date, end_date = _stable_date_range(2)
+
+    await app_with_training.call_tool(
+        "get_respiration_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+    mock_garmin_client.get_respiration_data.reset_mock()
+
+    result = await app_with_training.call_tool(
+        "get_respiration_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    mock_garmin_client.get_respiration_data.assert_not_called()
+    data = json.loads(result[0][0].text)
+    assert data["cache_hits"] == 2
+    assert data["live_fetches"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_respiration_trend_allows_up_to_730_days(app_with_training, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_respiration_data.return_value = MOCK_RESPIRATION_TREND_DAY
+    end = datetime.date.today() - datetime.timedelta(days=10)
+    start = end - datetime.timedelta(days=729)
+
+    result = await app_with_training.call_tool(
+        "get_respiration_trend",
+        {"start_date": start.isoformat(), "end_date": end.isoformat()},
+    )
+
+    assert "Date range too large" not in result[0][0].text

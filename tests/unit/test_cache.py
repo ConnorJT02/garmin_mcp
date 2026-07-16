@@ -123,3 +123,62 @@ class TestMissingDates:
         assert stable_date not in result
         assert uncached_stable_date in result
         assert today in result
+
+
+class TestResolveRange:
+    """Tests for resolve_range, including the no-data marker behavior."""
+
+    def test_live_fetches_and_caches_available_days(self, temp_cache):
+        stable_date = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
+        fetch = lambda d: {"raw": d}
+        curate = lambda data, d: {"date": d, "value": 42}
+
+        trend, cache_hits, live_fetches = cache.resolve_range(
+            "hrv", stable_date, stable_date, fetch, curate
+        )
+
+        assert trend == [{"date": stable_date, "value": 42}]
+        assert cache_hits == 0
+        assert live_fetches == 1
+
+    def test_no_data_day_is_cached_and_not_refetched(self, temp_cache):
+        """A day curate() can't extract anything from must still be cached
+        (as a no-data marker), or every future query re-fetches it forever."""
+        stable_date = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
+        calls = []
+
+        def fetch(d):
+            calls.append(d)
+            return {"raw": d}
+
+        curate = lambda data, d: None  # simulates "no usable data this day"
+
+        trend1, cache_hits1, live_fetches1 = cache.resolve_range(
+            "hrv", stable_date, stable_date, fetch, curate
+        )
+        assert trend1 == []
+        assert live_fetches1 == 1
+        assert len(calls) == 1
+
+        # Second call for the same day: should be a cache hit, not a live fetch.
+        trend2, cache_hits2, live_fetches2 = cache.resolve_range(
+            "hrv", stable_date, stable_date, fetch, curate
+        )
+        assert trend2 == []
+        assert cache_hits2 == 1
+        assert live_fetches2 == 0
+        assert len(calls) == 1  # fetch was not called again
+
+    def test_no_data_marker_excluded_from_trend_but_counts_as_cache_hit(self, temp_cache):
+        stable_date = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
+        cache.store_day("hrv", stable_date, {"date": stable_date, cache.NO_DATA_KEY: True})
+
+        trend, cache_hits, live_fetches = cache.resolve_range(
+            "hrv", stable_date, stable_date,
+            fetch=lambda d: (_ for _ in ()).throw(AssertionError("should not fetch")),
+            curate=lambda data, d: data,
+        )
+
+        assert trend == []
+        assert cache_hits == 1
+        assert live_fetches == 0

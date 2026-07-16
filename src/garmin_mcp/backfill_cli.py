@@ -22,11 +22,22 @@ from garminconnect import (
 
 from garmin_mcp import cache
 from garmin_mcp.token_utils import get_token_path, token_exists
-from garmin_mcp.training import _curate_hrv_day
+from garmin_mcp.health_wellness import _curate_heart_rate_day, _curate_sleep_day
+from garmin_mcp.training import (
+    _curate_hrv_day,
+    _curate_respiration_day,
+    _curate_training_load_day,
+    _curate_vo2max_day,
+)
 
 # metric name -> (garmin client method name, curation function)
 _METRICS = {
     "hrv": ("get_hrv_data", _curate_hrv_day),
+    "training_load": ("get_training_status", _curate_training_load_day),
+    "vo2max": ("get_training_status", _curate_vo2max_day),
+    "respiration": ("get_respiration_data", _curate_respiration_day),
+    "sleep": ("get_sleep_data", _curate_sleep_day),
+    "heart_rate": ("get_heart_rates", _curate_heart_rate_day),
 }
 
 
@@ -80,6 +91,9 @@ def backfill(
                 cache.store_day(metric, date_str, entry)
                 fetched += 1
             else:
+                # Cache a no-data marker too, so this confirmed-empty day
+                # isn't live-refetched on every future trend query.
+                cache.store_day(metric, date_str, {"date": date_str, cache.NO_DATA_KEY: True})
                 skipped += 1
         except GarminConnectTooManyRequestsError:
             print(f"\n✗ Rate limited by Garmin after {fetched} day(s). Wait a while and re-run to resume.", file=sys.stderr)
@@ -110,16 +124,18 @@ def main():
     parser = argparse.ArgumentParser(
         description="Backfill the local Garmin MCP trend cache with historical data",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
+Available metrics: {", ".join(sorted(_METRICS))}
+
 Examples:
   # Backfill 2 years of HRV data ending today
   garmin-mcp-backfill --metric hrv
 
   # Backfill a specific, smaller range first
-  garmin-mcp-backfill --metric hrv --days 14
+  garmin-mcp-backfill --metric sleep --days 14
 
   # Go easier on Garmin's API (default is 1.5s between requests)
-  garmin-mcp-backfill --metric hrv --pace 3
+  garmin-mcp-backfill --metric heart_rate --pace 3
         """
     )
 

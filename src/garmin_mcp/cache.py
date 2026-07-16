@@ -13,7 +13,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Days more recent than this are always fetched live, never trusted from
 # cache, since Garmin can revise recent sync data (e.g. a delayed sync).
@@ -115,3 +115,64 @@ def missing_dates(metric: str, start_date: str, end_date: str) -> List[str]:
         if date > cutoff or date_str not in cached:
             result.append(date_str)
     return result
+
+
+# Marker stored for a day that was live-fetched and confirmed to have no
+# usable data (curate() returned None), so future queries don't keep
+# re-fetching it forever — without this, a stable day with genuinely no data
+# (e.g. before a device was worn) would never satisfy missing_dates() and
+# would be retried on every single call.
+NO_DATA_KEY = "__no_data__"
+
+
+def _is_no_data(payload: Dict[str, Any]) -> bool:
+    return bool(payload.get(NO_DATA_KEY))
+
+
+def resolve_range(
+    metric: str,
+    start_date: str,
+    end_date: str,
+    fetch: Callable[[str], Any],
+    curate: Callable[[Any, str], Optional[Dict[str, Any]]],
+) -> Tuple[List[Dict[str, Any]], int, int]:
+    """Resolve a date range for a metric, serving stable days from cache and
+    live-fetching (then caching) the rest.
+
+    ``fetch(date_str)`` should call the Garmin client for that single day;
+    ``curate(raw_data, date_str)`` should extract the small curated dict to
+    store/return, or None if there's nothing usable for that day. Trend tools
+    should catch per-day exceptions from `fetch` themselves if they want a
+    specific policy — resolve_range treats any exception from `fetch` or
+    `curate` as "no data for this day" and moves on, matching the existing
+    trend tools' "skip days with no data" behavior. A confirmed-empty day is
+    still cached (as a no-data marker) so it isn't live-refetched forever.
+
+    Returns (trend, cache_hits, live_fetches) where trend is sorted by date
+    and excludes no-data markers.
+    """
+    missing = missing_dates(metric, start_date, end_date)
+    missing_set = set(missing)
+    cached_entries = get_range(metric, start_date, end_date)
+    stable_cached = {d: v for d, v in cached_entries.items() if d not in missing_set}
+    cache_hits = len(stable_cached)
+    entries: Dict[str, Dict[str, Any]] = {
+        d: v for d, v in stable_cached.items() if not _is_no_data(v)
+    }
+
+    live_fetches = 0
+    for date_str in missing:
+        live_fetches += 1
+        try:
+            data = fetch(date_str)
+            entry = curate(data, date_str)
+            if entry:
+                entries[date_str] = entry
+                store_day(metric, date_str, entry)
+            else:
+                store_day(metric, date_str, {"date": date_str, NO_DATA_KEY: True})
+        except Exception:
+            pass
+
+    trend = [entries[d] for d in sorted(entries)]
+    return trend, cache_hits, live_fetches

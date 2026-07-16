@@ -3,11 +3,16 @@ Integration tests for health_wellness module MCP tools
 
 Tests all 22 health and wellness tools using FastMCP integration with mocked Garmin API responses.
 """
+import datetime
+import json
+import os
+import tempfile
+
 import pytest
 from unittest.mock import Mock
 from mcp.server.fastmcp import FastMCP
 
-from garmin_mcp import health_wellness
+from garmin_mcp import cache, health_wellness
 from tests.fixtures.garmin_responses import (
     MOCK_STATS,
     MOCK_USER_SUMMARY,
@@ -41,6 +46,24 @@ def app_with_health_wellness(mock_garmin_client):
     app = FastMCP("Test Health Wellness")
     app = health_wellness.register_tools(app)
     return app
+
+
+@pytest.fixture
+def temp_cache():
+    """Point the trend cache at an isolated temp DB for the duration of a test."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache.configure(os.path.join(tmpdir, "test_cache.db"))
+        try:
+            yield
+        finally:
+            cache.close()
+
+
+def _stable_date_range(days: int = 2):
+    """A date range old enough to fall outside the cache's freshness window."""
+    end = datetime.date.today() - datetime.timedelta(days=10)
+    start = end - datetime.timedelta(days=days - 1)
+    return start.isoformat(), end.isoformat()
 
 
 @pytest.mark.asyncio
@@ -628,3 +651,130 @@ async def test_get_sleep_data_exception(app_with_health_wellness, mock_garmin_cl
     # Verify error is handled gracefully
     assert result is not None
     # The tool should return an error message, not crash
+
+
+# get_sleep_trend cache tests
+@pytest.mark.asyncio
+async def test_get_sleep_trend_cold_cache_fetches_live(app_with_health_wellness, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_sleep_data.return_value = MOCK_SLEEP_DATA
+    start_date, end_date = _stable_date_range(2)
+
+    result = await app_with_health_wellness.call_tool(
+        "get_sleep_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    assert mock_garmin_client.get_sleep_data.call_count == 2
+    data = json.loads(result[0][0].text)
+    assert data["cache_hits"] == 0
+    assert data["live_fetches"] == 2
+    assert data["period_avg_sleep_score"] == 85
+    assert data["period_avg_sleep_hours"] == 8.0
+    assert data["trend"][0]["deep_sleep_seconds"] == 7200
+
+
+@pytest.mark.asyncio
+async def test_get_sleep_trend_warm_cache_skips_live_fetch(app_with_health_wellness, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_sleep_data.return_value = MOCK_SLEEP_DATA
+    start_date, end_date = _stable_date_range(2)
+
+    await app_with_health_wellness.call_tool(
+        "get_sleep_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+    mock_garmin_client.get_sleep_data.reset_mock()
+
+    result = await app_with_health_wellness.call_tool(
+        "get_sleep_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    mock_garmin_client.get_sleep_data.assert_not_called()
+    data = json.loads(result[0][0].text)
+    assert data["cache_hits"] == 2
+    assert data["live_fetches"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_sleep_trend_allows_up_to_730_days(app_with_health_wellness, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_sleep_data.return_value = MOCK_SLEEP_DATA
+    end = datetime.date.today() - datetime.timedelta(days=10)
+    start = end - datetime.timedelta(days=729)
+
+    result = await app_with_health_wellness.call_tool(
+        "get_sleep_trend",
+        {"start_date": start.isoformat(), "end_date": end.isoformat()},
+    )
+
+    assert "Date range too large" not in result[0][0].text
+
+
+@pytest.mark.asyncio
+async def test_get_sleep_trend_rejects_over_730_days(app_with_health_wellness, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_sleep_data.return_value = MOCK_SLEEP_DATA
+    end = datetime.date.today() - datetime.timedelta(days=10)
+    start = end - datetime.timedelta(days=730)
+
+    result = await app_with_health_wellness.call_tool(
+        "get_sleep_trend",
+        {"start_date": start.isoformat(), "end_date": end.isoformat()},
+    )
+
+    assert "Date range too large" in result[0][0].text
+
+
+# get_heart_rate_trend cache tests
+@pytest.mark.asyncio
+async def test_get_heart_rate_trend_cold_cache_fetches_live(app_with_health_wellness, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_heart_rates.return_value = MOCK_HEART_RATES
+    start_date, end_date = _stable_date_range(2)
+
+    result = await app_with_health_wellness.call_tool(
+        "get_heart_rate_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    assert mock_garmin_client.get_heart_rates.call_count == 2
+    data = json.loads(result[0][0].text)
+    assert data["cache_hits"] == 0
+    assert data["live_fetches"] == 2
+    assert data["period_avg_resting_heart_rate_bpm"] == 55
+    assert data["trend"][0]["max_heart_rate_bpm"] == 180
+    assert data["trend"][0]["avg_heart_rate_bpm"] == round((55 + 65 + 75) / 3, 1)
+
+
+@pytest.mark.asyncio
+async def test_get_heart_rate_trend_warm_cache_skips_live_fetch(app_with_health_wellness, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_heart_rates.return_value = MOCK_HEART_RATES
+    start_date, end_date = _stable_date_range(2)
+
+    await app_with_health_wellness.call_tool(
+        "get_heart_rate_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+    mock_garmin_client.get_heart_rates.reset_mock()
+
+    result = await app_with_health_wellness.call_tool(
+        "get_heart_rate_trend",
+        {"start_date": start_date, "end_date": end_date},
+    )
+
+    mock_garmin_client.get_heart_rates.assert_not_called()
+    data = json.loads(result[0][0].text)
+    assert data["cache_hits"] == 2
+    assert data["live_fetches"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_heart_rate_trend_allows_up_to_730_days(app_with_health_wellness, mock_garmin_client, temp_cache):
+    mock_garmin_client.get_heart_rates.return_value = MOCK_HEART_RATES
+    end = datetime.date.today() - datetime.timedelta(days=10)
+    start = end - datetime.timedelta(days=729)
+
+    result = await app_with_health_wellness.call_tool(
+        "get_heart_rate_trend",
+        {"start_date": start.isoformat(), "end_date": end.isoformat()},
+    )
+
+    assert "Date range too large" not in result[0][0].text
+

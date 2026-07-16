@@ -41,6 +41,93 @@ def _get_activity_type_mapping() -> Dict[int, str]:
     return _activity_type_cache
 
 
+def _curate_training_load_day(data: Dict[str, Any], date_str: str) -> Optional[Dict[str, Any]]:
+    """Extract the curated per-day training-load fields from a raw get_training_status() response.
+
+    Shared by get_training_load_trend (live tool) and the garmin-mcp-backfill CLI.
+    """
+    if not data:
+        return None
+    # Garmin can return these keys present but explicitly null (e.g. for
+    # dates before VO2 max estimation existed on the account) — `.get(k, {})`
+    # only falls back to {} when the key is absent, not when it's null, so
+    # `or {}` is needed to avoid an AttributeError on those days.
+    latest_data = (data.get("mostRecentTrainingStatus") or {}).get("latestTrainingStatusData") or {}
+    # latestTrainingStatusData is keyed by device ID; use the first device,
+    # same as get_training_status does.
+    status_data: Dict[str, Any] = {}
+    for _device_id, device_data in latest_data.items():
+        status_data = device_data
+        break
+    atl_dto = status_data.get("acuteTrainingLoadDTO") or {}
+    vo2_data = (data.get("mostRecentVO2Max") or {}).get("generic") or {}
+    entry: Dict[str, Any] = {"date": date_str}
+    atl = atl_dto.get("dailyTrainingLoadAcute")
+    ctl = atl_dto.get("dailyTrainingLoadChronic")
+    acwr = atl_dto.get("dailyAcuteChronicWorkloadRatio")
+    if atl is not None:
+        entry["atl"] = round(atl, 1)
+    if ctl is not None:
+        entry["ctl"] = round(ctl, 1)
+    if atl is not None and ctl is not None:
+        entry["tsb"] = round(ctl - atl, 1)
+    if acwr is not None:
+        entry["acwr"] = round(acwr, 2)
+    acwr_status = atl_dto.get("acwrStatus")
+    if acwr_status:
+        entry["acwr_status"] = acwr_status
+    ts_label = status_data.get("trainingStatusCyclingFeedbackPhrase") or status_data.get("trainingStatusFeedbackPhrase")
+    if ts_label:
+        entry["training_status"] = ts_label
+    vo2 = vo2_data.get("vo2MaxValue")
+    if vo2 is not None:
+        entry["vo2_max"] = round(vo2, 1)
+    return entry if len(entry) > 1 else None
+
+
+def _curate_vo2max_day(data: Dict[str, Any], date_str: str) -> Optional[Dict[str, Any]]:
+    """Extract the day's raw VO2 max value from a raw get_training_status() response.
+
+    No dedup here (unlike the old inline loop) — consecutive-unchanged-value
+    dedup depends on neighboring days and has to run after merging cache +
+    live results, so every day's real value is cached, and get_vo2max_trend
+    dedups the assembled trend list itself.
+    """
+    if not data:
+        return None
+    # mostRecentVO2Max can be present but explicitly null (e.g. before VO2 max
+    # estimation existed on the account) — `.get(k, {})` only falls back to {}
+    # when the key is absent, not when it's null, so `or {}` avoids a crash.
+    vo2_data = (data.get("mostRecentVO2Max") or {}).get("generic") or {}
+    vo2 = vo2_data.get("vo2MaxValue")
+    if vo2 is None:
+        return None
+    return {"date": date_str, "vo2_max": round(vo2, 1)}
+
+
+def _curate_respiration_day(data: Dict[str, Any], date_str: str) -> Optional[Dict[str, Any]]:
+    """Extract the curated per-day respiration fields from a raw get_respiration_data() response.
+
+    Shared by get_respiration_trend (live tool) and the garmin-mcp-backfill CLI.
+    """
+    if not data:
+        return None
+    entry: Dict[str, Any] = {"date": date_str}
+    avg_waking = data.get("avgWakingRespirationValue")
+    avg_sleep = data.get("avgSleepRespirationValue")
+    high_sleep = data.get("highestRespirationValue")
+    low_sleep = data.get("lowestRespirationValue")
+    if avg_waking is not None:
+        entry["avg_waking_breaths_per_min"] = round(avg_waking, 1)
+    if avg_sleep is not None:
+        entry["avg_sleep_breaths_per_min"] = round(avg_sleep, 1)
+    if high_sleep is not None:
+        entry["highest_breaths_per_min"] = round(high_sleep, 1)
+    if low_sleep is not None:
+        entry["lowest_breaths_per_min"] = round(low_sleep, 1)
+    return entry if len(entry) > 1 else None
+
+
 def _curate_hrv_day(data: Dict[str, Any], date_str: str) -> Optional[Dict[str, Any]]:
     """Extract the curated per-day HRV fields from a raw get_hrv_data() response.
 
@@ -522,9 +609,12 @@ def register_tools(app):
             if not status:
                 return f"No training status data found for {date}."
 
-            # Extract from nested structure
-            recent_status = status.get("mostRecentTrainingStatus", {})
-            latest_data = recent_status.get("latestTrainingStatusData", {})
+            # Extract from nested structure. These keys can be present but
+            # explicitly null (e.g. for dates before a metric existed on the
+            # account) — `.get(k, {})` only falls back to {} when the key is
+            # absent, not when it's null, so `or {}` avoids a crash.
+            recent_status = status.get("mostRecentTrainingStatus") or {}
+            latest_data = recent_status.get("latestTrainingStatusData") or {}
 
             # Get first device data (usually the primary device)
             device_data = {}
@@ -532,15 +622,16 @@ def register_tools(app):
                 device_data = data
                 break
 
-            acwr_data = device_data.get("acuteTrainingLoadDTO", {})
+            acwr_data = device_data.get("acuteTrainingLoadDTO") or {}
 
             # VO2 Max data
-            vo2_data = status.get("mostRecentVO2Max", {}).get("generic", {})
-            cycling_vo2_data = status.get("mostRecentVO2Max", {}).get("cycling", {})
+            most_recent_vo2max = status.get("mostRecentVO2Max") or {}
+            vo2_data = most_recent_vo2max.get("generic") or {}
+            cycling_vo2_data = most_recent_vo2max.get("cycling") or {}
 
             # Training load balance
-            load_balance = status.get("mostRecentTrainingLoadBalance", {})
-            load_map = load_balance.get("metricsTrainingLoadBalanceDTOMap", {})
+            load_balance = status.get("mostRecentTrainingLoadBalance") or {}
+            load_map = load_balance.get("metricsTrainingLoadBalanceDTOMap") or {}
             load_data = {}
             for device_id, data in load_map.items():
                 load_data = data
@@ -738,87 +829,12 @@ def register_tools(app):
         (ACWR) per day. Use this to assess whether the athlete is building fitness, peaking, or
         accumulating too much fatigue.
 
-        Recommended range: 4-8 weeks. Maximum: 90 days.
-
-        Args:
-            start_date: Start date in YYYY-MM-DD format
-            end_date: End date in YYYY-MM-DD format
-        """
-        MAX_DAYS = 90
-        try:
-            start = datetime.date.fromisoformat(start_date)
-            end = datetime.date.fromisoformat(end_date)
-        except ValueError as e:
-            return f"Invalid date format: {e}. Use YYYY-MM-DD."
-
-        days = (end - start).days + 1
-        if days > MAX_DAYS:
-            return f"Date range too large ({days} days). Maximum is {MAX_DAYS} days."
-        if days < 1:
-            return "end_date must be on or after start_date."
-
-        trend = []
-        current = start
-        while current <= end:
-            date_str = current.isoformat()
-            try:
-                data = garmin_client.get_training_status(date_str)
-                if data:
-                    status_data = (
-                        data.get("mostRecentTrainingStatus", {})
-                        .get("latestTrainingStatusData", {})
-                    )
-                    atl_dto = status_data.get("acuteTrainingLoadDTO", {})
-                    vo2_data = data.get("mostRecentVO2Max", {}).get("generic", {})
-                    entry: Dict[str, Any] = {"date": date_str}
-                    atl = atl_dto.get("dailyTrainingLoadAcute")
-                    ctl = atl_dto.get("dailyTrainingLoadChronic")
-                    acwr = atl_dto.get("dailyAcuteChronicWorkloadRatio")
-                    if atl is not None:
-                        entry["atl"] = round(atl, 1)
-                    if ctl is not None:
-                        entry["ctl"] = round(ctl, 1)
-                    if atl is not None and ctl is not None:
-                        entry["tsb"] = round(ctl - atl, 1)
-                    if acwr is not None:
-                        entry["acwr"] = round(acwr, 2)
-                    acwr_status = atl_dto.get("acwrStatus")
-                    if acwr_status:
-                        entry["acwr_status"] = acwr_status
-                    ts = status_data.get("trainingStatusDTO", {})
-                    ts_label = ts.get("trainingStatusCyclingFeedbackPhrase") or ts.get("trainingStatusFeedbackPhrase")
-                    if ts_label:
-                        entry["training_status"] = ts_label
-                    vo2 = vo2_data.get("vo2MaxValue")
-                    if vo2 is not None:
-                        entry["vo2_max"] = round(vo2, 1)
-                    if len(entry) > 1:  # has more than just date
-                        trend.append(entry)
-            except Exception:
-                pass  # skip days with no data
-            current += datetime.timedelta(days=1)
-
-        if not trend:
-            return f"No training load data found between {start_date} and {end_date}."
-
-        return json.dumps({
-            "start_date": start_date,
-            "end_date": end_date,
-            "days_with_data": len(trend),
-            "trend": trend,
-        }, indent=2)
-
-    @app.tool()
-    async def get_hrv_trend(start_date: str, end_date: str) -> str:
-        """Get HRV (Heart Rate Variability) trend over a date range.
-
-        Returns daily HRV values and weekly rolling averages. Single-day HRV is too noisy
-        to act on — use this tool to identify baseline shifts that signal accumulated fatigue
-        or recovery. A drop of >10ms from the 7-day baseline warrants reducing training load.
-
-        Recommended range: 7-21 days. Maximum: 730 days (2 years) — results for dates already
-        fetched before are served from a local cache; a range that's never been queried before
-        will be slower since each new day requires a live Garmin API call.
+        Maximum: 730 days (2 years). Request the whole range you actually want in a single
+        call rather than several smaller ones — results are served from a local cache after
+        the first fetch, so one big request that's mostly cache hits is both faster and
+        produces one cohesive chart, instead of several smaller ones from repeated calls.
+        Only a range that's never been queried before is slow, since each new day requires
+        a live Garmin API call.
 
         Args:
             start_date: Start date in YYYY-MM-DD format
@@ -837,27 +853,61 @@ def register_tools(app):
         if days < 1:
             return "end_date must be on or after start_date."
 
-        missing = cache.missing_dates("hrv", start_date, end_date)
-        missing_set = set(missing)
-        cached_entries = cache.get_range("hrv", start_date, end_date)
-        entries: Dict[str, Dict[str, Any]] = {
-            d: v for d, v in cached_entries.items() if d not in missing_set
-        }
-        cache_hits = len(entries)
+        trend, cache_hits, live_fetches = cache.resolve_range(
+            "training_load", start_date, end_date,
+            fetch=garmin_client.get_training_status,
+            curate=_curate_training_load_day,
+        )
 
-        live_fetches = 0
-        for date_str in missing:
-            live_fetches += 1
-            try:
-                data = garmin_client.get_hrv_data(date_str)
-                entry = _curate_hrv_day(data, date_str)
-                if entry:
-                    entries[date_str] = entry
-                    cache.store_day("hrv", date_str, entry)
-            except Exception:
-                pass
+        if not trend:
+            return f"No training load data found between {start_date} and {end_date}."
 
-        trend = [entries[d] for d in sorted(entries)]
+        return json.dumps({
+            "start_date": start_date,
+            "end_date": end_date,
+            "days_with_data": len(trend),
+            "cache_hits": cache_hits,
+            "live_fetches": live_fetches,
+            "trend": trend,
+        }, indent=2)
+
+    @app.tool()
+    async def get_hrv_trend(start_date: str, end_date: str) -> str:
+        """Get HRV (Heart Rate Variability) trend over a date range.
+
+        Returns daily HRV values and weekly rolling averages. Single-day HRV is too noisy
+        to act on — use this tool to identify baseline shifts that signal accumulated fatigue
+        or recovery. A drop of >10ms from the 7-day baseline warrants reducing training load.
+
+        Maximum: 730 days (2 years). Request the whole range you actually want in a single
+        call rather than several smaller ones — results are served from a local cache after
+        the first fetch, so one big request that's mostly cache hits is both faster and
+        produces one cohesive chart, instead of several smaller ones from repeated calls.
+        Only a range that's never been queried before is slow, since each new day requires
+        a live Garmin API call.
+
+        Args:
+            start_date: Start date in YYYY-MM-DD format
+            end_date: End date in YYYY-MM-DD format
+        """
+        MAX_DAYS = 730
+        try:
+            start = datetime.date.fromisoformat(start_date)
+            end = datetime.date.fromisoformat(end_date)
+        except ValueError as e:
+            return f"Invalid date format: {e}. Use YYYY-MM-DD."
+
+        days = (end - start).days + 1
+        if days > MAX_DAYS:
+            return f"Date range too large ({days} days). Maximum is {MAX_DAYS} days."
+        if days < 1:
+            return "end_date must be on or after start_date."
+
+        trend, cache_hits, live_fetches = cache.resolve_range(
+            "hrv", start_date, end_date,
+            fetch=garmin_client.get_hrv_data,
+            curate=_curate_hrv_day,
+        )
 
         if not trend:
             return f"No HRV data found between {start_date} and {end_date}."
@@ -889,13 +939,18 @@ def register_tools(app):
         Note: VO2 max estimates are smoothed and update gradually — daily changes of <0.5
         are within normal noise. Focus on the 4-6 week trend direction.
 
-        Recommended range: 4-12 weeks. Maximum: 90 days.
+        Maximum: 730 days (2 years). Request the whole range you actually want in a single
+        call rather than several smaller ones — results are served from a local cache after
+        the first fetch, so one big request that's mostly cache hits is both faster and
+        produces one cohesive chart, instead of several smaller ones from repeated calls.
+        Only a range that's never been queried before is slow, since each new day requires
+        a live Garmin API call.
 
         Args:
             start_date: Start date in YYYY-MM-DD format
             end_date: End date in YYYY-MM-DD format
         """
-        MAX_DAYS = 90
+        MAX_DAYS = 730
         try:
             start = datetime.date.fromisoformat(start_date)
             end = datetime.date.fromisoformat(end_date)
@@ -908,24 +963,19 @@ def register_tools(app):
         if days < 1:
             return "end_date must be on or after start_date."
 
+        raw_trend, cache_hits, live_fetches = cache.resolve_range(
+            "vo2max", start_date, end_date,
+            fetch=garmin_client.get_training_status,
+            curate=_curate_vo2max_day,
+        )
+
+        # Deduplicate consecutive unchanged values (VO2 max updates gradually).
         trend = []
         last_vo2 = None
-        current = start
-        while current <= end:
-            date_str = current.isoformat()
-            try:
-                data = garmin_client.get_training_status(date_str)
-                if data:
-                    vo2_data = data.get("mostRecentVO2Max", {}).get("generic", {})
-                    vo2 = vo2_data.get("vo2MaxValue")
-                    if vo2 is not None:
-                        vo2_rounded = round(vo2, 1)
-                        if vo2_rounded != last_vo2:  # deduplicate unchanged values
-                            trend.append({"date": date_str, "vo2_max": vo2_rounded})
-                            last_vo2 = vo2_rounded
-            except Exception:
-                pass
-            current += datetime.timedelta(days=1)
+        for entry in raw_trend:
+            if entry["vo2_max"] != last_vo2:
+                trend.append(entry)
+                last_vo2 = entry["vo2_max"]
 
         if not trend:
             return f"No VO2 max data found between {start_date} and {end_date}."
@@ -938,6 +988,8 @@ def register_tools(app):
             "start_date": start_date,
             "end_date": end_date,
             "data_points": len(trend),
+            "cache_hits": cache_hits,
+            "live_fetches": live_fetches,
             "first_vo2_max": first_vo2,
             "latest_vo2_max": latest_vo2,
             "change": change,
@@ -952,13 +1004,18 @@ def register_tools(app):
         warning sign for overreaching, illness, or poor recovery. Use this alongside HRV
         trend for a complete recovery picture.
 
-        Recommended range: 7-21 days. Maximum: 30 days.
+        Maximum: 730 days (2 years). Request the whole range you actually want in a single
+        call rather than several smaller ones — results are served from a local cache after
+        the first fetch, so one big request that's mostly cache hits is both faster and
+        produces one cohesive chart, instead of several smaller ones from repeated calls.
+        Only a range that's never been queried before is slow, since each new day requires
+        a live Garmin API call.
 
         Args:
             start_date: Start date in YYYY-MM-DD format
             end_date: End date in YYYY-MM-DD format
         """
-        MAX_DAYS = 30
+        MAX_DAYS = 730
         try:
             start = datetime.date.fromisoformat(start_date)
             end = datetime.date.fromisoformat(end_date)
@@ -971,31 +1028,11 @@ def register_tools(app):
         if days < 1:
             return "end_date must be on or after start_date."
 
-        trend = []
-        current = start
-        while current <= end:
-            date_str = current.isoformat()
-            try:
-                data = garmin_client.get_respiration_data(date_str)
-                if data:
-                    entry: Dict[str, Any] = {"date": date_str}
-                    avg_waking = data.get("avgWakingRespirationValue")
-                    avg_sleep = data.get("avgSleepRespirationValue")
-                    high_sleep = data.get("highestRespirationValue")
-                    low_sleep = data.get("lowestRespirationValue")
-                    if avg_waking is not None:
-                        entry["avg_waking_breaths_per_min"] = round(avg_waking, 1)
-                    if avg_sleep is not None:
-                        entry["avg_sleep_breaths_per_min"] = round(avg_sleep, 1)
-                    if high_sleep is not None:
-                        entry["highest_breaths_per_min"] = round(high_sleep, 1)
-                    if low_sleep is not None:
-                        entry["lowest_breaths_per_min"] = round(low_sleep, 1)
-                    if len(entry) > 1:
-                        trend.append(entry)
-            except Exception:
-                pass
-            current += datetime.timedelta(days=1)
+        trend, cache_hits, live_fetches = cache.resolve_range(
+            "respiration", start_date, end_date,
+            fetch=garmin_client.get_respiration_data,
+            curate=_curate_respiration_day,
+        )
 
         if not trend:
             return f"No respiration data found between {start_date} and {end_date}."
@@ -1008,6 +1045,8 @@ def register_tools(app):
             "end_date": end_date,
             "days_with_data": len(trend),
             "period_avg_sleep_breaths_per_min": avg_sleep_overall,
+            "cache_hits": cache_hits,
+            "live_fetches": live_fetches,
             "trend": trend,
         }, indent=2)
 

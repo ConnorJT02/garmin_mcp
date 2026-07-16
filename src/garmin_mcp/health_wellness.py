@@ -5,6 +5,7 @@ import json
 import datetime
 from typing import Any, Dict, List, Optional, Union
 
+from garmin_mcp import cache
 from garmin_mcp.ui.resources import CHART_URIS
 
 # The garmin_client will be set by the main file
@@ -15,6 +16,65 @@ def configure(client):
     """Configure the module with the Garmin client instance"""
     global garmin_client
     garmin_client = client
+
+
+def _curate_sleep_day(data: Dict[str, Any], date_str: str) -> Optional[Dict[str, Any]]:
+    """Extract the curated per-day sleep trend fields from a raw get_sleep_data() response.
+
+    Shared by get_sleep_trend (live tool) and the garmin-mcp-backfill CLI.
+    """
+    if not data:
+        return None
+    daily_sleep = data.get("dailySleepDTO", {})
+    if not daily_sleep:
+        return None
+    entry: Dict[str, Any] = {"date": date_str}
+    sleep_seconds = daily_sleep.get("sleepTimeSeconds")
+    if sleep_seconds is not None:
+        entry["sleep_hours"] = round(sleep_seconds / 3600, 2)
+    # sleepScores/overall can be present but explicitly null — `.get(k, {})`
+    # only falls back to {} when the key is absent, not when it's null.
+    score = ((daily_sleep.get("sleepScores") or {}).get("overall") or {}).get("value")
+    if score is not None:
+        entry["sleep_score"] = score
+    deep = daily_sleep.get("deepSleepSeconds")
+    light = daily_sleep.get("lightSleepSeconds")
+    rem = daily_sleep.get("remSleepSeconds")
+    awake = daily_sleep.get("awakeSleepSeconds")
+    if deep is not None:
+        entry["deep_sleep_seconds"] = deep
+    if light is not None:
+        entry["light_sleep_seconds"] = light
+    if rem is not None:
+        entry["rem_sleep_seconds"] = rem
+    if awake is not None:
+        entry["awake_seconds"] = awake
+    return entry if len(entry) > 1 else None
+
+
+def _curate_heart_rate_day(data: Dict[str, Any], date_str: str) -> Optional[Dict[str, Any]]:
+    """Extract the curated per-day heart-rate trend fields from a raw get_heart_rates() response.
+
+    Shared by get_heart_rate_trend (live tool) and the garmin-mcp-backfill CLI.
+    """
+    if not data:
+        return None
+    entry: Dict[str, Any] = {"date": date_str}
+    max_hr = data.get("maxHeartRate")
+    min_hr = data.get("minHeartRate")
+    resting_hr = data.get("restingHeartRate")
+    if max_hr is not None:
+        entry["max_heart_rate_bpm"] = max_hr
+    if min_hr is not None:
+        entry["min_heart_rate_bpm"] = min_hr
+    if resting_hr is not None:
+        entry["resting_heart_rate_bpm"] = resting_hr
+    hr_values = data.get("heartRateValues", [])
+    if hr_values:
+        valid_values = [v[1] for v in hr_values if v[1] and v[1] > 0]
+        if valid_values:
+            entry["avg_heart_rate_bpm"] = round(sum(valid_values) / len(valid_values), 1)
+    return entry if len(entry) > 1 else None
 
 
 def register_tools(app):
@@ -414,6 +474,57 @@ def register_tools(app):
             return f"Error retrieving heart rate summary: {str(e)}"
 
     @app.tool()
+    async def get_heart_rate_trend(start_date: str, end_date: str) -> str:
+        """Get heart rate trend (max/min/resting/avg bpm per day) over a date range.
+
+        Garmin has no native weekly/monthly rollup for heart rate, so this fetches
+        one day at a time — results for dates already fetched before are served
+        from a local cache, so repeat queries over the same range are fast.
+        A range that's never been queried before will be slower since each new
+        day requires a live Garmin API call.
+
+        Maximum: 730 days (2 years).
+
+        Args:
+            start_date: Start date in YYYY-MM-DD format
+            end_date: End date in YYYY-MM-DD format
+        """
+        MAX_DAYS = 730
+        try:
+            start = datetime.date.fromisoformat(start_date)
+            end = datetime.date.fromisoformat(end_date)
+        except ValueError as e:
+            return f"Invalid date format: {e}. Use YYYY-MM-DD."
+
+        days = (end - start).days + 1
+        if days > MAX_DAYS:
+            return f"Date range too large ({days} days). Maximum is {MAX_DAYS} days."
+        if days < 1:
+            return "end_date must be on or after start_date."
+
+        trend, cache_hits, live_fetches = cache.resolve_range(
+            "heart_rate", start_date, end_date,
+            fetch=garmin_client.get_heart_rates,
+            curate=_curate_heart_rate_day,
+        )
+
+        if not trend:
+            return f"No heart rate data found between {start_date} and {end_date}."
+
+        resting_values = [e["resting_heart_rate_bpm"] for e in trend if "resting_heart_rate_bpm" in e]
+        avg_resting = round(sum(resting_values) / len(resting_values), 1) if resting_values else None
+
+        return json.dumps({
+            "start_date": start_date,
+            "end_date": end_date,
+            "days_with_data": len(trend),
+            "period_avg_resting_heart_rate_bpm": avg_resting,
+            "cache_hits": cache_hits,
+            "live_fetches": live_fetches,
+            "trend": trend,
+        }, indent=2)
+
+    @app.tool()
     async def get_hydration_data(date: str) -> str:
         """Get hydration data
 
@@ -476,9 +587,12 @@ def register_tools(app):
                 summary['sleep_start'] = daily_sleep.get('sleepStartTimestampGMT')
                 summary['sleep_end'] = daily_sleep.get('sleepEndTimestampGMT')
 
-                # Sleep score and quality
-                summary['sleep_score'] = daily_sleep.get('sleepScores', {}).get('overall', {}).get('value')
-                summary['sleep_score_qualifier'] = daily_sleep.get('sleepScores', {}).get('overall', {}).get('qualifierKey')
+                # Sleep score and quality. sleepScores/overall can be present
+                # but explicitly null — `.get(k, {})` only falls back to {}
+                # when the key is absent, not when it's null.
+                overall_score = (daily_sleep.get('sleepScores') or {}).get('overall') or {}
+                summary['sleep_score'] = overall_score.get('value')
+                summary['sleep_score_qualifier'] = overall_score.get('qualifierKey')
 
                 # Sleep phases (in seconds)
                 summary['deep_sleep_seconds'] = daily_sleep.get('deepSleepSeconds')
@@ -521,6 +635,60 @@ def register_tools(app):
             return json.dumps(summary, indent=2)
         except Exception as e:
             return f"Error retrieving sleep summary: {str(e)}"
+
+    @app.tool()
+    async def get_sleep_trend(start_date: str, end_date: str) -> str:
+        """Get sleep trend (score, hours, and stage breakdown per day) over a date range.
+
+        Garmin has no native weekly/monthly rollup for sleep, so this fetches one
+        day at a time — results for dates already fetched before are served from
+        a local cache, so repeat queries over the same range are fast. A range
+        that's never been queried before will be slower since each new day
+        requires a live Garmin API call.
+
+        Maximum: 730 days (2 years).
+
+        Args:
+            start_date: Start date in YYYY-MM-DD format
+            end_date: End date in YYYY-MM-DD format
+        """
+        MAX_DAYS = 730
+        try:
+            start = datetime.date.fromisoformat(start_date)
+            end = datetime.date.fromisoformat(end_date)
+        except ValueError as e:
+            return f"Invalid date format: {e}. Use YYYY-MM-DD."
+
+        days = (end - start).days + 1
+        if days > MAX_DAYS:
+            return f"Date range too large ({days} days). Maximum is {MAX_DAYS} days."
+        if days < 1:
+            return "end_date must be on or after start_date."
+
+        trend, cache_hits, live_fetches = cache.resolve_range(
+            "sleep", start_date, end_date,
+            fetch=garmin_client.get_sleep_data,
+            curate=_curate_sleep_day,
+        )
+
+        if not trend:
+            return f"No sleep data found between {start_date} and {end_date}."
+
+        score_values = [e["sleep_score"] for e in trend if "sleep_score" in e]
+        avg_score = round(sum(score_values) / len(score_values), 1) if score_values else None
+        hours_values = [e["sleep_hours"] for e in trend if "sleep_hours" in e]
+        avg_hours = round(sum(hours_values) / len(hours_values), 2) if hours_values else None
+
+        return json.dumps({
+            "start_date": start_date,
+            "end_date": end_date,
+            "days_with_data": len(trend),
+            "period_avg_sleep_score": avg_score,
+            "period_avg_sleep_hours": avg_hours,
+            "cache_hits": cache_hits,
+            "live_fetches": live_fetches,
+            "trend": trend,
+        }, indent=2)
 
     @app.tool()
     async def get_stress_data(date: str) -> str:
