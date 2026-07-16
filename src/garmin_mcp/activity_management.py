@@ -5,6 +5,8 @@ import json
 import datetime
 from typing import Any, Dict, List, Optional, Union
 
+from garmin_mcp.ui.resources import CHART_URIS
+
 # The garmin_client will be set by the main file
 garmin_client = None
 
@@ -533,7 +535,7 @@ def register_tools(app):
         except Exception as e:
             return f"Error updating activity feel: {str(e)}"
 
-    @app.tool()
+    @app.tool(meta={"ui": {"resourceUri": CHART_URIS["activity_splits"]}})
     async def get_activity_splits(activity_id: Union[int, str]) -> str:
         """Get splits for an activity
 

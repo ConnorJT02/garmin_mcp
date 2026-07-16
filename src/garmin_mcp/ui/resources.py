@@ -74,6 +74,11 @@ _CHARTS = {
         "body_composition_trend_chart",
         "Line chart of body weight trend over a date range",
     ),
+    "activity_splits": (
+        "ui://garmin-mcp/activity_splits_chart.html",
+        "activity_splits_chart",
+        "Bar chart of pace and heart rate per lap/split for an activity",
+    ),
 }
 
 # Exposed so other modules can do:
