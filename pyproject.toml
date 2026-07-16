@@ -15,12 +15,14 @@ dependencies = [
     "mcp>=1.23.0",
     "fitparse>=1.2.0",
     "pip-system-certs>=5.3",
+    "anthropic>=0.75.0",
 ]
 
 [project.scripts]
 garmin-mcp = "garmin_mcp:main"
 garmin-mcp-auth = "garmin_mcp.auth_cli:main"
 garmin-mcp-backfill = "garmin_mcp.backfill_cli:main"
+garmin-mcp-dashboard = "garmin_mcp.dashboard.server:main"
 
 [tool.uv]
 dev-dependencies = [

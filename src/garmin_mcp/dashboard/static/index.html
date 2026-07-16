@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Garmin Dashboard</title>
+<link rel="stylesheet" href="/dashboard.css" />
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar">
+      <h1 class="brand">Garmin Dashboard</h1>
+      <ul id="nav-list"></ul>
+    </nav>
+    <main class="content">
+      <section class="panel" id="panel-overview" hidden>
+        <div class="panel-header">
+          <h2>📊 All Metrics</h2>
+        </div>
+        <form class="range-form" id="overview-form">
+          <label>From <input type="date" id="overview-start" required /></label>
+          <label>To <input type="date" id="overview-end" required /></label>
+          <button type="submit">Load</button>
+        </form>
+        <div id="overview-insight" class="insight-box empty">Load a date range to generate insights.</div>
+        <div id="overview-grid" class="overview-grid"></div>
+      </section>
+
+      <section class="panel" id="panel-trend" hidden>
+        <div class="panel-header">
+          <h2 id="trend-title"></h2>
+          <span class="score" id="trend-score"></span>
+        </div>
+        <form class="range-form" id="trend-form">
+          <label>From <input type="date" id="trend-start" required /></label>
+          <label>To <input type="date" id="trend-end" required /></label>
+          <button type="submit">Load</button>
+        </form>
+        <div id="trend-legend"></div>
+        <div id="trend-content" class="chart-content empty">Pick a date range and press Load.</div>
+
+        <div class="sleep-stages-section" id="sleep-stages-section" hidden>
+          <div class="sleep-stages-header">
+            <h3>Sleep Stages</h3>
+            <label>Date <input type="date" id="sleep-stages-date" /></label>
+          </div>
+          <div id="sleep-stages-content" class="chart-content empty">Pick a date to see the stage breakdown.</div>
+        </div>
+
+        <div id="trend-insight" class="insight-box empty">Load a date range to generate insights.</div>
+      </section>
+
+      <section class="panel" id="panel-splits" hidden>
+        <div class="panel-header">
+          <h2>⏱️ Activity Splits</h2>
+          <span class="score" id="splits-score"></span>
+        </div>
+        <form class="range-form" id="splits-form">
+          <label>Activity
+            <select id="splits-activity"><option value="">Loading recent activities&hellip;</option></select>
+          </label>
+        </form>
+        <div id="splits-content" class="chart-content empty">Pick an activity above.</div>
+      </section>
+
+      <section class="panel challenges-panel" id="panel-challenges" hidden>
+        <div class="panel-header">
+          <h2>🏅 Challenges &amp; Badges</h2>
+        </div>
+
+        <div class="challenges-section">
+          <h3>Available to Join</h3>
+          <div id="challenges-available" class="challenge-grid empty">Loading&hellip;</div>
+        </div>
+
+        <div class="challenges-section">
+          <h3>In Progress</h3>
+          <div id="challenges-in-progress" class="challenge-grid empty">Loading&hellip;</div>
+        </div>
+
+        <div class="challenges-section">
+          <h3>Earned Badges</h3>
+          <div id="challenges-badges" class="badge-grid empty">Loading&hellip;</div>
+        </div>
+      </section>
+
+      <section class="panel chat-panel" id="panel-chat" hidden>
+        <div class="panel-header">
+          <h2>💬 Ask About My Data</h2>
+          <button type="button" id="chat-reset" class="chat-reset-btn">New chat</button>
+        </div>
+        <div id="chat-messages" class="chat-messages">
+          <div class="chat-empty">Ask anything about your Garmin data — e.g. &ldquo;How did my sleep this week compare to last week?&rdquo;</div>
+        </div>
+        <form class="chat-form" id="chat-form">
+          <textarea id="chat-input" rows="1" placeholder="Ask about your training, sleep, HRV&hellip;" autocomplete="off" required></textarea>
+          <button type="submit">Send</button>
+        </form>
+      </section>
+
+      <section class="panel plan-panel" id="panel-plan" hidden>
+        <div class="panel-header">
+          <h2>🗓️ Training Plan</h2>
+        </div>
+        <div class="plan-layout">
+          <div class="plan-calendar">
+            <div class="calendar-header">
+              <button type="button" id="calendar-prev" aria-label="Previous month">&lsaquo;</button>
+              <h3 id="calendar-month-label"></h3>
+              <button type="button" id="calendar-next" aria-label="Next month">&rsaquo;</button>
+            </div>
+            <div class="calendar-weekdays">
+              <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+            </div>
+            <div id="calendar-grid" class="calendar-grid"></div>
+          </div>
+          <div class="plan-chat">
+            <div class="panel-header">
+              <h3>Plan Builder</h3>
+              <button type="button" id="plan-chat-reset" class="chat-reset-btn">New chat</button>
+            </div>
+            <div id="plan-chat-messages" class="chat-messages">
+              <div class="chat-empty">Tell me your goal — e.g. &ldquo;I want to run a 5k in 6 weeks, I can train 3 days a week.&rdquo;</div>
+            </div>
+            <form class="chat-form" id="plan-chat-form">
+              <textarea id="plan-chat-input" rows="1" placeholder="Describe your goal, or say &quot;schedule it&quot; to confirm&hellip;" autocomplete="off" required></textarea>
+              <button type="submit">Send</button>
+            </form>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/dashboard.js"></script>
+</body>
+</html>
