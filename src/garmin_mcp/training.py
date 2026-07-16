@@ -7,6 +7,7 @@ import datetime
 from typing import Any, Dict, List, Optional, Union
 
 from garmin_mcp import cache
+from garmin_mcp.ui.resources import CHART_URIS
 
 # The garmin_client will be set by the main file
 garmin_client = None
@@ -820,7 +821,7 @@ def register_tools(app):
         except Exception as e:
             return f"Error requesting data reload: {str(e)}"
 
-    @app.tool()
+    @app.tool(meta={"ui": {"resourceUri": CHART_URIS["training_load_trend"]}})
     async def get_training_load_trend(start_date: str, end_date: str) -> str:
         """Get the Performance Management Chart (CTL/ATL/TSB) over a date range.
 
@@ -871,7 +872,7 @@ def register_tools(app):
             "trend": trend,
         }, indent=2)
 
-    @app.tool()
+    @app.tool(meta={"ui": {"resourceUri": CHART_URIS["hrv_trend"]}})
     async def get_hrv_trend(start_date: str, end_date: str) -> str:
         """Get HRV (Heart Rate Variability) trend over a date range.
 
@@ -928,7 +929,7 @@ def register_tools(app):
             "trend": trend,
         }, indent=2)
 
-    @app.tool()
+    @app.tool(meta={"ui": {"resourceUri": CHART_URIS["vo2max_trend"]}})
     async def get_vo2max_trend(start_date: str, end_date: str) -> str:
         """Get VO2 max trend over a date range.
 
@@ -996,7 +997,7 @@ def register_tools(app):
             "trend": trend,
         }, indent=2)
 
-    @app.tool()
+    @app.tool(meta={"ui": {"resourceUri": CHART_URIS["respiration_trend"]}})
     async def get_respiration_trend(start_date: str, end_date: str) -> str:
         """Get overnight respiration rate trend over a date range.
 

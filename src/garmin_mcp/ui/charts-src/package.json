@@ -5,13 +5,12 @@
   "type": "module",
   "description": "Build pipeline for garmin_mcp MCP Apps UI charts. Bundles each chart's HTML/JS entry (in this directory) into a single self-contained file under ../charts/, which is what the Python server actually serves.",
   "scripts": {
-    "build": "cross-env INPUT=sleep_chart.html vite build && cross-env INPUT=heart_rate_chart.html vite build && cross-env INPUT=stress_chart.html vite build && cross-env INPUT=steps_chart.html vite build"
+    "build": "node build.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.4"
   },
   "devDependencies": {
-    "cross-env": "^10.1.0",
     "vite": "^6.0.0",
     "vite-plugin-singlefile": "^2.3.0"
   }

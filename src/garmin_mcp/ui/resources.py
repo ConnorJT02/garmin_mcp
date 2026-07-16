@@ -39,6 +39,36 @@ _CHARTS = {
         "steps_chart",
         "Area chart of steps with goal reference line",
     ),
+    "hrv_trend": (
+        "ui://garmin-mcp/hrv_trend_chart.html",
+        "hrv_trend_chart",
+        "Line chart of HRV trend over a date range",
+    ),
+    "sleep_trend": (
+        "ui://garmin-mcp/sleep_trend_chart.html",
+        "sleep_trend_chart",
+        "Line chart of sleep score trend over a date range",
+    ),
+    "heart_rate_trend": (
+        "ui://garmin-mcp/heart_rate_trend_chart.html",
+        "heart_rate_trend_chart",
+        "Line chart of resting heart rate trend over a date range",
+    ),
+    "vo2max_trend": (
+        "ui://garmin-mcp/vo2max_trend_chart.html",
+        "vo2max_trend_chart",
+        "Line chart of VO2 max trend over a date range",
+    ),
+    "respiration_trend": (
+        "ui://garmin-mcp/respiration_trend_chart.html",
+        "respiration_trend_chart",
+        "Line chart of sleep respiration trend over a date range",
+    ),
+    "training_load_trend": (
+        "ui://garmin-mcp/training_load_trend_chart.html",
+        "training_load_trend_chart",
+        "Multi-line chart of training load (CTL/ATL) trend over a date range",
+    ),
 }
 
 # Exposed so other modules can do:

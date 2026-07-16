@@ -174,8 +174,8 @@
       bars.appendChild(col);
     });
 
-    contentEl.replaceWith(bars);
-    bars.id = "content";
+    contentEl.className = "";
+    contentEl.replaceChildren(bars);
   }
 
   const app = new App({ name: "garmin-mcp-stress-chart", version: "0.1.0" });

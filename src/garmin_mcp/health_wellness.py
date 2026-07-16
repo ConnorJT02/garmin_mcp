@@ -473,7 +473,7 @@ def register_tools(app):
         except Exception as e:
             return f"Error retrieving heart rate summary: {str(e)}"
 
-    @app.tool()
+    @app.tool(meta={"ui": {"resourceUri": CHART_URIS["heart_rate_trend"]}})
     async def get_heart_rate_trend(start_date: str, end_date: str) -> str:
         """Get heart rate trend (max/min/resting/avg bpm per day) over a date range.
 
@@ -636,7 +636,7 @@ def register_tools(app):
         except Exception as e:
             return f"Error retrieving sleep summary: {str(e)}"
 
-    @app.tool()
+    @app.tool(meta={"ui": {"resourceUri": CHART_URIS["sleep_trend"]}})
     async def get_sleep_trend(start_date: str, end_date: str) -> str:
         """Get sleep trend (score, hours, and stage breakdown per day) over a date range.
 
